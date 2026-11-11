@@ -9,7 +9,7 @@
     "db:init": "node src/db/init.js",
     "admin:create": "node src/db/create-admin.js"
   },
-  "dependencies": {
+  "dependencies": {"google-auth-library": "^11.3.4",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
