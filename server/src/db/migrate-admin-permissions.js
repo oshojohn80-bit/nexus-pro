@@ -148,4 +148,51 @@ migrate()
   })
   .finally(async () => {
     await pool.end();
+    -- Enforce a maximum of three fixed Main Admin positions.
+CREATE OR REPLACE FUNCTION enforce_main_admin_limit()
+RETURNS TRIGGER AS $$
+DECLARE
+  existing_count INTEGER;
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.role IN ('SUPER_ADMIN', 'MAIN_ADMIN') THEN
+      PERFORM pg_advisory_xact_lock(741852963);
+
+      SELECT COUNT(*) INTO existing_count
+      FROM admin_users
+      WHERE role IN ('SUPER_ADMIN', 'MAIN_ADMIN');
+
+      IF existing_count >= 3 THEN
+        RAISE EXCEPTION
+          'All three fixed Main Admin positions are occupied.';
+      END IF;
+    END IF;
+
+  ELSIF NEW.role IS DISTINCT FROM OLD.role THEN
+    IF NEW.role IN ('SUPER_ADMIN', 'MAIN_ADMIN') THEN
+      PERFORM pg_advisory_xact_lock(741852963);
+
+      SELECT COUNT(*) INTO existing_count
+      FROM admin_users
+      WHERE role IN ('SUPER_ADMIN', 'MAIN_ADMIN')
+        AND id <> OLD.id;
+
+      IF existing_count >= 3 THEN
+        RAISE EXCEPTION
+          'All three fixed Main Admin positions are occupied.';
+      END IF;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS enforce_main_admin_limit_trigger
+ON admin_users;
+
+CREATE TRIGGER enforce_main_admin_limit_trigger
+BEFORE INSERT OR UPDATE OF role ON admin_users
+FOR EACH ROW
+EXECUTE FUNCTION enforce_main_admin_limit();
   });
