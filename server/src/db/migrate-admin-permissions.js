@@ -9,7 +9,7 @@ async function migrate() {
   try {
     await client.query('BEGIN');
 
-    // Add account-management fields without deleting existing data.
+    // Preserve existing accounts and add management fields.
     await client.query(`
       ALTER TABLE admin_users
         ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ACTIVE',
@@ -20,31 +20,22 @@ async function migrate() {
         ADD COLUMN IF NOT EXISTS suspended_by TEXT;
     `);
 
-    // Replace the old role restriction safely.
+    // Replace the existing single-role restriction.
     await client.query(`
-      DO $$
-      DECLARE
-        constraint_record RECORD;
-      BEGIN
-        FOR constraint_record IN
-          SELECT conname
-          FROM pg_constraint
-          WHERE conrelid = 'admin_users'::regclass
-            AND contype = 'c'
-            AND pg_get_constraintdef(oid) ILIKE '%role%'
-        LOOP
-          EXECUTE format(
-            'ALTER TABLE admin_users DROP CONSTRAINT %I',
-            constraint_record.conname
-          );
-        END LOOP;
-      END $$;
+      ALTER TABLE admin_users
+      DROP CONSTRAINT IF EXISTS admin_users_role_check;
     `);
 
     await client.query(`
       ALTER TABLE admin_users
       ADD CONSTRAINT admin_users_role_check
       CHECK (role IN ('SUPER_ADMIN', 'MAIN_ADMIN', 'ADMIN'));
+    `);
+
+    // Make the migration safely repeatable.
+    await client.query(`
+      ALTER TABLE admin_users
+      DROP CONSTRAINT IF EXISTS admin_users_status_check;
     `);
 
     await client.query(`
@@ -55,11 +46,16 @@ async function migrate() {
 
     await client.query(`
       ALTER TABLE admin_users
+      DROP CONSTRAINT IF EXISTS admin_users_permissions_object_check;
+    `);
+
+    await client.query(`
+      ALTER TABLE admin_users
       ADD CONSTRAINT admin_users_permissions_object_check
       CHECK (jsonb_typeof(permissions) = 'object');
     `);
 
-    // Add structured audit details.
+    // Preserve existing audit records and add structured details.
     await client.query(`
       ALTER TABLE audit_logs
       ADD COLUMN IF NOT EXISTS details JSONB NOT NULL DEFAULT '{}'::jsonb;
@@ -70,22 +66,40 @@ async function migrate() {
       ON admin_users(role, status);
     `);
 
-    // Prevent removal or suspension of the last active Main Admin.
+    // Protect the last active Main Admin.
     await client.query(`
       CREATE OR REPLACE FUNCTION protect_last_main_admin()
       RETURNS TRIGGER AS $$
       DECLARE
         active_count INTEGER;
       BEGIN
+        PERFORM pg_advisory_xact_lock(741852963);
+
+        IF TG_OP = 'DELETE' THEN
+          IF OLD.role IN ('SUPER_ADMIN', 'MAIN_ADMIN')
+             AND OLD.status = 'ACTIVE' THEN
+
+            SELECT COUNT(*) INTO active_count
+            FROM admin_users
+            WHERE role IN ('SUPER_ADMIN', 'MAIN_ADMIN')
+              AND status = 'ACTIVE'
+              AND id <> OLD.id;
+
+            IF active_count < 1 THEN
+              RAISE EXCEPTION
+                'The last active Main Admin cannot be removed.';
+            END IF;
+          END IF;
+
+          RETURN OLD;
+        END IF;
+
         IF OLD.role IN ('SUPER_ADMIN', 'MAIN_ADMIN')
            AND OLD.status = 'ACTIVE'
            AND (
-             TG_OP = 'DELETE'
-             OR NEW.role NOT IN ('SUPER_ADMIN', 'MAIN_ADMIN')
+             NEW.role NOT IN ('SUPER_ADMIN', 'MAIN_ADMIN')
              OR NEW.status <> 'ACTIVE'
-           )
-        THEN
-          PERFORM pg_advisory_xact_lock(741852963);
+           ) THEN
 
           SELECT COUNT(*) INTO active_count
           FROM admin_users
@@ -95,12 +109,8 @@ async function migrate() {
 
           IF active_count < 1 THEN
             RAISE EXCEPTION
-              'The last active Main Admin cannot be removed or suspended.';
+              'The last active Main Admin cannot be suspended or demoted.';
           END IF;
-        END IF;
-
-        IF TG_OP = 'DELETE' THEN
-          RETURN OLD;
         END IF;
 
         RETURN NEW;
