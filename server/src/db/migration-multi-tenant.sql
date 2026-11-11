@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS organisations (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 2. Create a default organisation for existing inventory
+-- 2. Create the internal organisation
 INSERT INTO organisations (name, slug)
 VALUES ('NEXUS PRO Internal', 'nexus-pro-internal')
 ON CONFLICT (slug) DO NOTHING;
@@ -25,31 +25,63 @@ ALTER TABLE devices
 ADD COLUMN IF NOT EXISTS organization_id BIGINT
 REFERENCES organisations(id);
 
--- 4. Assign existing inventory to the default organisation
+ALTER TABLE audit_logs
+ADD COLUMN IF NOT EXISTS organization_id BIGINT
+REFERENCES organisations(id);
+
+ALTER TABLE security_events
+ADD COLUMN IF NOT EXISTS organization_id BIGINT
+REFERENCES organisations(id);
+
+-- 4. Assign existing devices to the internal organisation
 UPDATE devices
 SET organization_id = (
-  SELECT id FROM organisations
+  SELECT id
+  FROM organisations
   WHERE slug = 'nexus-pro-internal'
 )
 WHERE organization_id IS NULL;
 
--- 5. Require every device to belong to an organisation
+-- 5. Require every device to have an organisation
 ALTER TABLE devices
 ALTER COLUMN organization_id SET NOT NULL;
 
--- 6. Allow organisation administrators
+-- 6. Replace global asset-tag uniqueness with
+-- organisation-level uniqueness
+ALTER TABLE devices
+DROP CONSTRAINT IF EXISTS devices_asset_tag_key;
+
+CREATE UNIQUE INDEX IF NOT EXISTS
+devices_organisation_asset_tag_unique
+ON devices (organization_id, asset_tag);
+
+-- 7. Configure administrator roles
 ALTER TABLE admin_users
 DROP CONSTRAINT IF EXISTS admin_users_role_check;
 
 ALTER TABLE admin_users
 ADD CONSTRAINT admin_users_role_check
-CHECK (role IN ('SUPER_ADMIN', 'ORG_ADMIN'));
+CHECK (
+  (role = 'SUPER_ADMIN' AND organization_id IS NULL)
+  OR
+  (role = 'ORG_ADMIN' AND organization_id IS NOT NULL)
+);
 
--- 7. Add indexes
-CREATE INDEX IF NOT EXISTS devices_organisation_idx
-ON devices(organization_id);
+-- 8. Add organisation indexes
+CREATE INDEX IF NOT EXISTS
+devices_organisation_idx
+ON devices (organization_id);
 
-CREATE INDEX IF NOT EXISTS admin_users_organisation_idx
-ON admin_users(organization_id);
+CREATE INDEX IF NOT EXISTS
+admin_users_organisation_idx
+ON admin_users (organization_id);
+
+CREATE INDEX IF NOT EXISTS
+audit_logs_organisation_idx
+ON audit_logs (organization_id);
+
+CREATE INDEX IF NOT EXISTS
+security_events_organisation_idx
+ON security_events (organization_id);
 
 COMMIT;
