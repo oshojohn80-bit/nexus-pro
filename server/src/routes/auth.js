@@ -6,6 +6,8 @@ import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
+const MAIN_ADMIN_ROLES = ['SUPER_ADMIN', 'MAIN_ADMIN'];
+
 router.post('/login', async (req, res, next) => {
   try {
     const email = String(req.body?.email || '').trim().toLowerCase();
@@ -23,6 +25,8 @@ router.post('/login', async (req, res, next) => {
          email,
          password_hash,
          role,
+         status,
+         permissions,
          to_jsonb(admin_users)->>'organization_id' AS organization_id
        FROM admin_users
        WHERE email = $1`,
@@ -37,11 +41,18 @@ router.post('/login', async (req, res, next) => {
       });
     }
 
-    // Organisation administrator access remains disabled
-    // until tenant isolation is implemented across the API.
-    if (admin.role !== 'SUPER_ADMIN') {
+    if (admin.status !== 'ACTIVE') {
       return res.status(403).json({
-        error: 'Organisation administrator access is not enabled yet.'
+        error: 'This administrator account is inactive or suspended.'
+      });
+    }
+
+    if (
+      !MAIN_ADMIN_ROLES.includes(admin.role) &&
+      admin.role !== 'ADMIN'
+    ) {
+      return res.status(403).json({
+        error: 'This account does not have dashboard access.'
       });
     }
 
@@ -78,6 +89,8 @@ router.post('/login', async (req, res, next) => {
         id: admin.id,
         email: admin.email,
         role: admin.role,
+        status: admin.status,
+        permissions: admin.permissions || {},
         organization_id: admin.organization_id
           ? Number(admin.organization_id)
           : null
@@ -94,6 +107,7 @@ router.get('/me', requireAuth, async (req, res) => {
     id: Number(req.user.sub),
     email: req.user.email,
     role: req.user.role,
+    permissions: req.user.permissions || {},
     organization_id: req.user.organization_id ?? null
   });
 });
