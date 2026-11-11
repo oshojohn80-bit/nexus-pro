@@ -1,15 +1,13 @@
 import jwt from 'jsonwebtoken';
 export function requireAuth(req, res, next) {
-  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
-  if (!token) return res.status(401).json({ error: 'Authentication required' });
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  if (!token) return res.status(401).json({ error: 'Authentication required.' });
   try {
     req.user = jwt.verify(token, process.env.JWT_SECRET);
+    if (req.user.role !== 'SUPER_ADMIN') return res.status(403).json({ error: 'Super Admin access required.' });
     next();
   } catch {
-    return res.status(401).json({ error: 'Invalid or expired session' });
+    return res.status(401).json({ error: 'Your session is invalid or has expired. Please sign in again.' });
   }
-}
-export function requireSuperAdmin(req, res, next) {
-  if (req.user?.role !== 'SUPER_ADMIN') return res.status(403).json({ error: 'Forbidden' });
-  next();
 }

@@ -6,20 +6,16 @@ import deviceRoutes from './routes/devices.js';
 import dashboardRoutes from './routes/dashboard.js';
 import auditRoutes from './routes/audit.js';
 dotenv.config();
-if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
-  throw new Error('JWT_SECRET must be set to at least 32 characters.');
-}
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) throw new Error('JWT_SECRET must be set to at least 32 characters.');
 const app = express();
-app.use(cors({ origin: process.env.CLIENT_ORIGIN?.split(',') || 'http://localhost:5173' }));
+const allowedOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173').split(',').map(v => v.trim()).filter(Boolean);
+app.use(cors({ origin(origin, callback) { if (!origin || allowedOrigins.includes(origin)) return callback(null, true); return callback(new Error('Origin not allowed by CORS')); } }));
 app.use(express.json({ limit: '1mb' }));
-app.get('/api/health', (_req,res) => res.json({ ok:true, service:'NEXUS PRO ENTERPRISE API' }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'NEXUS PRO ENTERPRISE API' }));
 app.use('/api/auth', authRoutes);
 app.use('/api/devices', deviceRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/audit-logs', auditRoutes);
-app.use((err,_req,res,_next) => {
-  console.error(err);
-  res.status(500).json({ error:'Unexpected server error' });
-});
+app.use((err, _req, res, _next) => { console.error(err); res.status(500).json({ error: 'Unexpected server error' }); });
 const port = Number(process.env.PORT || 4000);
-app.listen(port, () => console.log(`NEXUS PRO API listening on ${port}`));
+app.listen(port, '0.0.0.0', () => console.log(`NEXUS PRO API listening on ${port}`));

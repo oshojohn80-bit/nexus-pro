@@ -77,10 +77,10 @@ Only report live device state after connecting a real, authorized Android Enterp
 
 ## Render deployment outline
 1. Create a managed PostgreSQL database in Render.
-2. Deploy `server/` as a Node Web Service with build command `npm install` and start command `npm start`.
-3. Set `DATABASE_URL`, `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, and `CLIENT_ORIGIN`.
-4. Deploy `client/` as a Static Site. Set `VITE_API_BASE` to your backend URL, and configure SPA rewrites.
-5. Run `npm run db:init` and `npm run admin:create` as a one-time release/console operation.
+2. Deploy `server/` as a Node Web Service. Set Root Directory to `server`, Build Command to `npm install`, and Start Command to `npm start`.
+3. Set `DATABASE_URL` to the Render PostgreSQL Internal Database URL, `JWT_SECRET` to a random secret of at least 32 characters, `ADMIN_EMAIL`, `ADMIN_PASSWORD` (at least 14 characters), and `CLIENT_ORIGIN` to the exact deployed frontend origin.
+4. After the database and API service exist, open the API service Shell and run `npm run db:init` once, then `npm run admin:create` once. Do not put real secrets in GitHub.
+5. Deploy `client/` as a Static Site. Set Root Directory to `client`, Build Command to `npm install && npm run build`, Publish Directory to `dist`, and `VITE_API_BASE` to the backend service URL (for example `https://nexus-pro-api.onrender.com`). Configure a rewrite from `/*` to `/index.html` with action `Rewrite`.
 6. Use HTTPS, rotate secrets, configure backups, and restrict admin access before enrolling devices.
 
 For production, replace the starter's bootstrap admin flow with a controlled invitation/recovery process,
