@@ -1,0 +1,14 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nexus_rmm
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: change_this_local_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - nexus_pgdata:/var/lib/postgresql/data
+volumes:
+  nexus_pgdata:
