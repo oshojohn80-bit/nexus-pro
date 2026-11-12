@@ -85,3 +85,14 @@ export function requirePermission(permission) {
     next();
   };
 }
+export function requireMainAdmin(req, res, next) {
+  const allowedRoles = ['SUPER_ADMIN', 'MAIN_ADMIN'];
+
+  if (!req.user || !allowedRoles.includes(req.user.role)) {
+    return res.status(403).json({
+      error: 'Main Admin access required.'
+    });
+  }
+
+  next();
+}
