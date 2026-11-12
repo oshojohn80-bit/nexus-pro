@@ -55,7 +55,13 @@ router.post('/login', async (req, res, next) => {
         error: 'This account does not have dashboard access.'
       });
     }
-
+await pool.query(
+  `UPDATE admin_users
+   SET last_login_at = NOW(),
+       updated_at = NOW()
+   WHERE id = $1`,
+  [admin.id]
+);
     const token = jwt.sign(
       {
         sub: String(admin.id),
