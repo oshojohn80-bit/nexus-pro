@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
-import { requireAuth } from '../middleware/auth.js';
-
+import {
+  requireAuth,
+  requirePermission
+} from '../middleware/auth.js';
 const router = Router();
 
 router.use(requireAuth);
-
+router.use(requirePermission('dashboard'));
 router.get('/summary', async (req, res, next) => {
   try {
     // Check whether the multi-tenant migration has been applied.
@@ -33,8 +35,7 @@ router.get('/summary', async (req, res, next) => {
     const isSuperAdmin = req.user.role === 'SUPER_ADMIN';
     const isOrgAdmin = req.user.role === 'ORG_ADMIN';
 
-    if (!isSuperAdmin && !isOrgAdmin) {
-      return res.status(403).json({
+if (!['SUPER_ADMIN', 'MAIN_ADMIN', 'ADMIN'].includes(req.user.role)) {      return res.status(403).json({
         error: 'You are not authorised to view this dashboard.'
       });
     }
