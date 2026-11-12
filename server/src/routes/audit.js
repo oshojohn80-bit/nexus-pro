@@ -1,23 +1,40 @@
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
-import { requireAuth } from '../middleware/auth.js';
-
+import {
+  requireAuth,
+  requirePermission
+} from '../middleware/auth.js';
 const router = Router();
 
 router.use(requireAuth);
-
+router.use(requirePermission('audit_logs'));
 router.get('/', async (req, res, next) => {
   try {
-    // Check whether the multi-tenant migration has been applied.
-    const schemaCheck = await pool.query(`
-      SELECT EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND table_name = 'audit_logs'
-          AND column_name = 'organization_id'
-      ) AS migrated
+    if (!['SUPER_ADMIN', 'MAIN_ADMIN', 'ADMIN'].includes(req.user.role)) {
+      return res.status(403).json({
+        error: 'You are not authorised to view these audit logs.'
+      });
+    }
+
+    const { rows } = await pool.query(`
+      SELECT
+        id,
+        actor_email,
+        action,
+        target_type,
+        target_id,
+        created_at
+      FROM audit_logs
+      ORDER BY created_at DESC
+      LIMIT 200
     `);
+
+    return res.json({ logs: rows });
+
+  } catch (err) {
+    return next(err);
+  }
+});
 
     const migrated = schemaCheck.rows[0].migrated;
 
