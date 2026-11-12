@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { pool } from '../db/pool.js';
-import { requireAuth } from '../middleware/auth.js';
-
+import {
+  requireAuth,
+  requireMainAdmin
+} from '../middleware/auth.js';
 const router = Router();
 
 router.use(requireAuth);
@@ -22,19 +24,6 @@ const PERMISSIONS = [
   'organization_settings'
 ];
 
-function isMainAdmin(role) {
-  return MAIN_ADMIN_ROLES.includes(role);
-}
-
-function requireMainAdmin(req, res, next) {
-  if (!isMainAdmin(req.user?.role)) {
-    return res.status(403).json({
-      error: 'Main Admin access required.'
-    });
-  }
-
-  next();
-}
 
 function validatePermissions(permissions) {
   if (
@@ -102,7 +91,8 @@ router.get('/', requireMainAdmin, async (req, res, next) => {
 
 // Create an administrator account.
 router.post('/', requireMainAdmin, async (req, res, next) => {
-  const client = await pool.connect();
+  let client;
+  let transactionStarted = false;
 
   try {
     const confirmed = await verifyMainAdminPassword(req);
@@ -145,16 +135,16 @@ router.post('/', requireMainAdmin, async (req, res, next) => {
       });
     }
 
-    if (
-      role === 'MAIN_ADMIN' &&
-      Object.keys(permissions).length > 0
-    ) {
+    if (role === 'MAIN_ADMIN' && Object.keys(permissions).length > 0) {
       return res.status(400).json({
         error: 'Main Admins automatically receive full access.'
       });
     }
 
+    client = await pool.connect();
+
     await client.query('BEGIN');
+    transactionStarted = true;
 
     if (role === 'MAIN_ADMIN') {
       await client.query(
@@ -169,6 +159,7 @@ router.post('/', requireMainAdmin, async (req, res, next) => {
 
       if (count.rows[0].total >= 3) {
         await client.query('ROLLBACK');
+        transactionStarted = false;
 
         return res.status(409).json({
           error: 'All three fixed Main Admin positions are occupied.'
@@ -203,12 +194,21 @@ router.post('/', requireMainAdmin, async (req, res, next) => {
     );
 
     await client.query('COMMIT');
+    transactionStarted = false;
 
     res.status(201).json({
       admin: result.rows[0]
     });
   } catch (error) {
-    await client.query('ROLLBACK');
+    if (client && transactionStarted) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Rollback failed:', rollbackError);
+      }
+
+      transactionStarted = false;
+    }
 
     if (error.code === '23505') {
       return res.status(409).json({
@@ -216,9 +216,14 @@ router.post('/', requireMainAdmin, async (req, res, next) => {
       });
     }
 
+    if (String(error.message || '').includes('All three fixed Main Admin positions')) {
+        error: error.message
+      });
+    }
+
     next(error);
   } finally {
-    client.release();
+    client?.release();
   }
 });
 
@@ -227,6 +232,9 @@ router.patch(
   '/:id/permissions',
   requireMainAdmin,
   async (req, res, next) => {
+    let client;
+    let transactionStarted = false;
+
     try {
       const confirmed = await verifyMainAdminPassword(req);
 
@@ -251,63 +259,69 @@ router.patch(
         });
       }
 
-      let client;
-let transactionStarted = false;
+      client = await pool.connect();
 
-try {
-  client = await pool.connect();
-        await client.query('BEGIN');
-  transactionStarted = true;
+      await client.query('BEGIN');
+      transactionStarted = true;
 
-        const result = await client.query(
-          `UPDATE admin_users
-           SET permissions = $1::jsonb, updated_at = NOW()
-           WHERE id = $2 AND role = 'ADMIN'
-           RETURNING id, email, role, status, permissions`,
-          [JSON.stringify(permissions), adminId]
-        );
+      const result = await client.query(
+        `UPDATE admin_users
+         SET permissions = $1::jsonb, updated_at = NOW()
+         WHERE id = $2 AND role = 'ADMIN'
+         RETURNING id, email, role, status, permissions`,
+        [JSON.stringify(permissions), adminId]
+      );
 
-        if (!result.rowCount) {
-          await client.query('ROLLBACK');
-
-          return res.status(404).json({
-            error: 'Ordinary Admin account not found.'
-          });
-        }
-
-        await client.query(
-          `INSERT INTO audit_logs
-           (actor_email, action, target_type, target_id, details)
-           VALUES ($1, 'ADMIN_PERMISSIONS_UPDATED',
-                   'ADMIN_USER', $2, $3::jsonb)`,
-          [
-            req.user.email,
-            String(adminId),
-            JSON.stringify({ permissions })
-          ]
-        );
-
-        await client.query('COMMIT');
-
-        res.json({ admin: result.rows[0] });
-      } catch (error) {
+      if (!result.rowCount) {
         await client.query('ROLLBACK');
-        throw error;
-      } finally {
-        client.release();
+        transactionStarted = false;
+
+        return res.status(404).json({
+          error: 'Ordinary Admin account not found.'
+        });
       }
+
+      await client.query(
+        `INSERT INTO audit_logs
+         (actor_email, action, target_type, target_id, details)
+         VALUES ($1, 'ADMIN_PERMISSIONS_UPDATED',
+                 'ADMIN_USER', $2, $3::jsonb)`,
+        [
+          req.user.email,
+          String(adminId),
+          JSON.stringify({ permissions })
+        ]
+      );
+
+      await client.query('COMMIT');
+      transactionStarted = false;
+
+      return res.json({ admin: result.rows[0] });
+
     } catch (error) {
-      next(error);
+      if (client && transactionStarted) {
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackError) {
+          console.error('Permissions rollback failed:', rollbackError);
+        }
+        transactionStarted = false;
+      }
+
+      return next(error);
+
+    } finally {
+      client?.release();
     }
   }
 );
+
 // Suspend an administrator account.
 router.patch('/:id/suspend', requireMainAdmin, async (req, res, next) => {
- let client;
-let transactionStarted = false;
+  let client;
+  let transactionStarted = false;
 
-try {
-  client = await pool.connect();
+  try {
     const confirmed = await verifyMainAdminPassword(req);
 
     if (!confirmed) {
@@ -324,8 +338,16 @@ try {
       });
     }
 
+    if (String(adminId) === String(req.user.sub)) {
+      return res.status(400).json({
+        error: 'You cannot suspend your own account.'
+      });
+    }
+
+    client = await pool.connect();
+
     await client.query('BEGIN');
-  transactionStarted = true;
+    transactionStarted = true;
 
     const result = await client.query(
       `UPDATE admin_users
@@ -341,6 +363,7 @@ try {
 
     if (!result.rowCount) {
       await client.query('ROLLBACK');
+      transactionStarted = false;
 
       return res.status(404).json({
         error: 'Active administrator account not found.'
@@ -353,32 +376,43 @@ try {
        VALUES ($1, 'ADMIN_SUSPENDED', 'ADMIN_USER', $2, $3::jsonb)`,
       [
         req.user.email,
-      await client.query('COMMIT');
-transactionStarted = false;
+        String(adminId),
+        JSON.stringify({ email: result.rows[0].email })
+      ]
+    );
 
-res.json({ admin: result.rows[0] });
-} catch (error) {
-  if (client && transactionStarted) {
-    await client.query('ROLLBACK');
+    await client.query('COMMIT');
+    transactionStarted = false;
+
+    return res.json({ admin: result.rows[0] });
+
+  } catch (error) {
+    if (client && transactionStarted) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Suspend rollback failed:', rollbackError);
+      }
+      transactionStarted = false;
+    }
+
+    if (String(error.message || '').includes('last active Main Admin')) {
+      return res.status(409).json({ error: error.message });
+    }
+
+    return next(error);
+
+  } finally {
+    client?.release();
   }
-
-  if (error.message.includes('last active Main Admin')) {
-    return res.status(409).json({ error: error.message });
-  }
-
-  next(error);
-} finally {
-  client?.release();
-}
 });
 
 // Reactivate a suspended administrator account.
 router.patch('/:id/reactivate', requireMainAdmin, async (req, res, next) => {
- let client;
-let transactionStarted = false;
+  let client;
+  let transactionStarted = false;
 
-try {
-  client = await pool.connect();
+  try {
     const confirmed = await verifyMainAdminPassword(req);
 
     if (!confirmed) {
@@ -387,16 +421,18 @@ try {
       });
     }
 
-   const adminId = Number(req.params.id);
+    const adminId = Number(req.params.id);
 
-if (!Number.isSafeInteger(adminId) || adminId < 1) {
-  return res.status(400).json({
-    error: 'Invalid administrator ID.'
-  });
-}
+    if (!Number.isSafeInteger(adminId) || adminId < 1) {
+      return res.status(400).json({
+        error: 'Invalid administrator ID.'
+      });
+    }
 
-await client.query('BEGIN');
-  transactionStarted = true;
+    client = await pool.connect();
+
+    await client.query('BEGIN');
+    transactionStarted = true;
 
     const result = await client.query(
       `UPDATE admin_users
@@ -412,6 +448,7 @@ await client.query('BEGIN');
 
     if (!result.rowCount) {
       await client.query('ROLLBACK');
+      transactionStarted = false;
 
       return res.status(404).json({
         error: 'Suspended administrator account not found.'
@@ -429,19 +466,27 @@ await client.query('BEGIN');
       ]
     );
 
- await client.query('COMMIT');
-transactionStarted = false;
+    await client.query('COMMIT');
+    transactionStarted = false;
 
-res.json({ admin: result.rows[0] });
-} catch (error) {
-  if (client && transactionStarted) {
-    await client.query('ROLLBACK');
+    return res.json({ admin: result.rows[0] });
+
+  } catch (error) {
+    if (client && transactionStarted) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Reactivate rollback failed:', rollbackError);
+      }
+
+      transactionStarted = false;
+    }
+
+    return next(error);
+
+  } finally {
+    client?.release();
   }
-
-  next(error);
-} finally {
-  client?.release();
-}
 });
 // Delete an administrator account.
 router.delete('/:id', requireMainAdmin, async (req, res, next) => {
@@ -517,7 +562,12 @@ router.delete('/:id', requireMainAdmin, async (req, res, next) => {
     });
   } catch (error) {
     if (client && transactionStarted) {
-      await client.query('ROLLBACK');
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Admin deletion rollback failed:', rollbackError);
+      }
+      transactionStarted = false;
     }
 
     next(error);
