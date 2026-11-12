@@ -571,7 +571,13 @@ router.delete('/:id', requireMainAdmin, async (req, res, next) => {
       transactionStarted = false;
     }
 
-    next(error);
+    if (String(error.message || '').includes('last active Main Admin')) {
+      return res.status(409).json({
+        error: error.message
+      });
+    }
+
+    return next(error);
   } finally {
     client?.release();
   }
