@@ -2,7 +2,39 @@ import React, { useEffect, useState } from 'react';
 
 const API_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/$/, '');
 
-const api = async (path, token, options = {}) => {
+const PERMISSIONS = [
+  ['dashboard', 'Dashboard'],
+  ['devices', 'Devices'],
+  ['screen_control', 'Screen Control'],
+  ['applications', 'Applications'],
+  ['security_policies', 'Security Policies'],
+  ['remote_lock_wipe', 'Remote Lock / Wipe'],
+  ['employees', 'Employees'],
+  ['reports', 'Reports'],
+  ['audit_logs', 'Audit Logs'],
+  ['organization_settings', 'Organisation Settings']
+];
+
+const NAV = [
+  ['Overview', 'dashboard'],
+  ['Devices', 'devices'],
+  ['Screen Control', 'screen_control'],
+  ['Applications', 'applications'],
+  ['Security Center', 'security_policies'],
+  ['Employees', 'employees'],
+  ['Reports', 'reports'],
+  ['Audit Logs', 'audit_logs'],
+  ['Settings', 'organization_settings']
+];
+
+const EMPTY_PERMISSIONS = Object.fromEntries(
+  PERMISSIONS.map(([key]) => [key, false])
+);
+
+const isMainAdmin = user =>
+  ['SUPER_ADMIN', 'MAIN_ADMIN'].includes(user?.role);
+
+async function api(path, token, options = {}) {
   const response = await fetch(`${API_BASE}/api${path}`, {
     ...options,
     headers: {
@@ -15,11 +47,11 @@ const api = async (path, token, options = {}) => {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(data.error || 'Request failed');
+    throw new Error(data.error || `Request failed (${response.status})`);
   }
 
   return data;
-};
+}
 
 function Login({ onLogin }) {
   const [email, setEmail] = useState('');
@@ -29,8 +61,8 @@ function Login({ onLogin }) {
 
   async function submit(e) {
     e.preventDefault();
-    setError('');
     setBusy(true);
+    setError('');
 
     try {
       const data = await api('/auth/login', '', {
@@ -52,7 +84,7 @@ function Login({ onLogin }) {
         <div className="brand-mark">NP</div>
         <p className="eyebrow">ENTERPRISE DEVICE MANAGEMENT</p>
         <h1>NEXUS PRO</h1>
-        <p className="muted">Super Admin sign in</p>
+        <p className="muted">Administrator sign in</p>
 
         <label>
           Email
@@ -102,10 +134,7 @@ function AddDeviceForm({ token, onClose, onCreated }) {
   const [error, setError] = useState('');
 
   function update(field, value) {
-    setForm(previous => ({
-      ...previous,
-      [field]: value
-    }));
+    setForm(old => ({ ...old, [field]: value }));
   }
 
   async function submit(e) {
@@ -132,16 +161,8 @@ function AddDeviceForm({ token, onClose, onCreated }) {
     <div className="modal-backdrop">
       <section className="card device-modal">
         <div className="modal-heading">
-          <div>
-            <p className="eyebrow">DEVICE MANAGEMENT</p>
-            <h2>Register device</h2>
-          </div>
-
-          <button
-            type="button"
-            className="close-button"
-            onClick={onClose}
-          >
+          <h2>Register device</h2>
+          <button type="button" className="close-button" onClick={onClose}>
             ×
           </button>
         </div>
@@ -152,7 +173,6 @@ function AddDeviceForm({ token, onClose, onCreated }) {
             <input
               value={form.asset_tag}
               onChange={e => update('asset_tag', e.target.value)}
-              placeholder="e.g. NEXUS-001"
               required
             />
           </label>
@@ -162,33 +182,28 @@ function AddDeviceForm({ token, onClose, onCreated }) {
             <input
               value={form.display_name}
               onChange={e => update('display_name', e.target.value)}
-              placeholder="e.g. Samsung Galaxy A55"
               required
             />
           </label>
 
-          <div className="form-grid">
-            <label>
-              Manufacturer
-              <input
-                value={form.manufacturer}
-                onChange={e => update('manufacturer', e.target.value)}
-                placeholder="Samsung"
-              />
-            </label>
-
-            <label>
-              Model
-              <input
-                value={form.model}
-                onChange={e => update('model', e.target.value)}
-                placeholder="SM-A556"
-              />
-            </label>
-          </div>
+          <label>
+            Manufacturer
+            <input
+              value={form.manufacturer}
+              onChange={e => update('manufacturer', e.target.value)}
+            />
+          </label>
 
           <label>
-            Ownership type *
+            Model
+            <input
+              value={form.model}
+              onChange={e => update('model', e.target.value)}
+            />
+          </label>
+
+          <label>
+            Ownership
             <select
               value={form.ownership_type}
               onChange={e => update('ownership_type', e.target.value)}
@@ -203,38 +218,399 @@ function AddDeviceForm({ token, onClose, onCreated }) {
             <input
               value={form.assigned_to}
               onChange={e => update('assigned_to', e.target.value)}
-              placeholder="Employee name or work email"
             />
           </label>
 
           <p className="form-note">
-            This registers an inventory record only. It does not enroll
-            or remotely manage the Android device.
+            This creates an inventory record only. Android enrollment and
+            remote management are not yet connected.
           </p>
 
           {error && <p className="error">{error}</p>}
 
           <div className="form-actions">
-            <button
-              type="button"
-              className="ghost"
-              onClick={onClose}
-              disabled={busy}
-            >
+            <button type="button" className="ghost" onClick={onClose}>
               Cancel
             </button>
-
-            <button
-              type="submit"
-              className="primary form-submit"
-              disabled={busy}
-            >
-              {busy ? 'Registering...' : 'Register device'}
+            <button className="primary" disabled={busy}>
+              {busy ? 'Saving...' : 'Register device'}
             </button>
           </div>
         </form>
       </section>
     </div>
+  );
+}
+
+function AdminManagement({ token, user, notify }) {
+  const [admins, setAdmins] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+
+  const [form, setForm] = useState({
+    email: '',
+    password: '',
+    role: 'ADMIN',
+    currentPassword: '',
+    permissions: { ...EMPTY_PERMISSIONS }
+  });
+
+  async function loadAdmins() {
+    setBusy(true);
+    setError('');
+
+    try {
+      const data = await api('/admins', token);
+      setAdmins(data.admins || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    loadAdmins();
+  }, [token]);
+
+  function updateForm(field, value) {
+    setForm(old => ({ ...old, [field]: value }));
+  }
+
+  function updatePermission(key, value) {
+    setForm(old => ({
+      ...old,
+      permissions: {
+        ...old.permissions,
+        [key]: value
+      }
+    }));
+  }
+
+  async function createAdmin(e) {
+    e.preventDefault();
+    setError('');
+
+    try {
+      await api('/admins', token, {
+        method: 'POST',
+        body: JSON.stringify(form)
+      });
+
+      setShowCreate(false);
+      setForm({
+        email: '',
+        password: '',
+        role: 'ADMIN',
+        currentPassword: '',
+        permissions: { ...EMPTY_PERMISSIONS }
+      });
+
+      notify('Administrator account created.');
+      await loadAdmins();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function accountAction(admin, action) {
+    const actionLabels = {
+      suspend: 'suspend',
+      reactivate: 'reactivate',
+      delete: 'permanently delete'
+    };
+
+    if (!window.confirm(
+      `Are you sure you want to ${actionLabels[action]} ${admin.email}?`
+    )) return;
+
+    const currentPassword = window.prompt(
+      'Enter your own Main Admin password to confirm this action:'
+    );
+
+    if (!currentPassword) return;
+
+    setError('');
+
+    try {
+      if (action === 'delete') {
+        await api(`/admins/${admin.id}`, token, {
+          method: 'DELETE',
+          body: JSON.stringify({ currentPassword })
+        });
+      } else {
+        await api(`/admins/${admin.id}/${action}`, token, {
+          method: 'PATCH',
+          body: JSON.stringify({ currentPassword })
+        });
+      }
+
+      notify(`Account ${action} action completed.`);
+      await loadAdmins();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function editPermissions(admin) {
+    const currentPassword = window.prompt(
+      'Enter your Main Admin password to change permissions:'
+    );
+
+    if (!currentPassword) return;
+
+    const permissions = {};
+
+    for (const [key, label] of PERMISSIONS) {
+      permissions[key] = window.confirm(
+        `Allow ${admin.email} to access ${label}?\n\nOK = Allow\nCancel = Deny`
+      );
+    }
+
+    if (!window.confirm(
+      'Save these permissions for ' + admin.email + '?'
+    )) return;
+
+    try {
+      await api(`/admins/${admin.id}/permissions`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ permissions, currentPassword })
+      });
+
+      notify('Administrator permissions updated.');
+      await loadAdmins();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  const mainAdminCount = admins.filter(a =>
+    ['SUPER_ADMIN', 'MAIN_ADMIN'].includes(a.role)
+  ).length;
+
+  return (
+    <section className="card panel">
+      <div className="device-toolbar">
+        <div>
+          <p className="eyebrow">ACCESS CONTROL</p>
+          <h2>Admin Management</h2>
+          <p className="muted">
+            Manage the three fixed Main Admin positions and ordinary Admins.
+          </p>
+        </div>
+
+        <button className="primary" onClick={() => setShowCreate(!showCreate)}>
+          + Add Admin
+        </button>
+      </div>
+
+      <div className="grid stats">
+        <div className="card stat">
+          <p>Main Admin positions</p>
+          <strong>{mainAdminCount}/3</strong>
+          <small>Suspended accounts still occupy a position</small>
+        </div>
+
+        <div className="card stat">
+          <p>Ordinary Admins</p>
+          <strong>
+            {admins.filter(a => a.role === 'ADMIN').length}
+          </strong>
+          <small>Individually permissioned</small>
+        </div>
+      </div>
+
+      {error && <div className="notice">{error}</div>}
+
+      {showCreate && (
+        <form className="card panel" onSubmit={createAdmin}>
+          <h3>Create administrator</h3>
+
+          <label>
+            Email
+            <input
+              type="email"
+              value={form.email}
+              onChange={e => updateForm('email', e.target.value)}
+              required
+            />
+          </label>
+
+          <label>
+            Temporary password
+            <input
+              type="password"
+              minLength="14"
+              value={form.password}
+              onChange={e => updateForm('password', e.target.value)}
+              required
+              autoComplete="new-password"
+            />
+            <small>Use at least 14 characters.</small>
+          </label>
+
+          <label>
+            Account type
+            <select
+              value={form.role}
+              onChange={e => updateForm('role', e.target.value)}
+            >
+              <option value="ADMIN">Ordinary Admin</option>
+              <option value="MAIN_ADMIN">Main Admin</option>
+            </select>
+          </label>
+
+          {form.role === 'ADMIN' && (
+            <>
+              <h3>Individual permissions</h3>
+              <div className="permission-grid">
+                {PERMISSIONS.map(([key, label]) => (
+                  <label key={key} className="permission-option">
+                    <input
+                      type="checkbox"
+                      checked={form.permissions[key]}
+                      onChange={e => updatePermission(key, e.target.checked)}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
+
+          <label>
+            Your current Main Admin password
+            <input
+              type="password"
+              value={form.currentPassword}
+              onChange={e => updateForm('currentPassword', e.target.value)}
+              required
+              autoComplete="current-password"
+            />
+          </label>
+
+          <div className="form-actions">
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => setShowCreate(false)}
+            >
+              Cancel
+            </button>
+            <button className="primary">Create account</button>
+          </div>
+        </form>
+      )}
+
+      {busy && <p className="muted">Loading administrator accounts...</p>}
+
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Email</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {admins.map(admin => {
+              const main = isMainAdmin(admin);
+              const self = String(admin.id) === String(user.id);
+
+              return (
+                <tr key={admin.id}>
+                  <td>
+                    {admin.email}
+                    {self && <small>Your account</small>}
+                  </td>
+
+                  <td>{main ? 'Main Admin' : 'Admin'}</td>
+
+                  <td>
+                    <span className="tag">
+                      {admin.status || 'ACTIVE'}
+                    </span>
+                  </td>
+
+                  <td>
+                    {self ? (
+                      <span className="muted">Current account protected</span>
+                    ) : (
+                      <div className="admin-actions">
+                        {main ? (
+                          <>
+                            <button
+                              className="ghost"
+                              onClick={() => accountAction(
+                                admin,
+                                admin.status === 'SUSPENDED'
+                                  ? 'reactivate'
+                                  : 'suspend'
+                              )}
+                            >
+                              {admin.status === 'SUSPENDED'
+                                ? 'Reactivate'
+                                : 'Suspend'}
+                            </button>
+
+                            <button
+                              className="ghost danger"
+                              onClick={() => accountAction(admin, 'delete')}
+                            >
+                              Delete
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              className="ghost"
+                              onClick={() => editPermissions(admin)}
+                            >
+                              Permissions
+                            </button>
+
+                            <button
+                              className="ghost"
+                              onClick={() => accountAction(
+                                admin,
+                                admin.status === 'SUSPENDED'
+                                  ? 'reactivate'
+                                  : 'suspend'
+                              )}
+                            >
+                              {admin.status === 'SUSPENDED'
+                                ? 'Reactivate'
+                                : 'Suspend'}
+                            </button>
+
+                            <button
+                              className="ghost danger"
+                              onClick={() => accountAction(admin, 'delete')}
+                            >
+                              Delete
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="form-note">
+        Main Admins have equal authority. Each can manage the other Main Admin
+        accounts. A suspended Main Admin continues to occupy one of the three
+        fixed positions. The last active Main Admin is protected by the backend.
+      </p>
+    </section>
   );
 }
 
@@ -253,40 +629,10 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [showAddDevice, setShowAddDevice] = useState(false);
 
-  async function load(t = token) {
-    if (!t) return;
+  const mainAdmin = isMainAdmin(user);
 
-    setLoading(true);
-
-    try {
-      const [s, d, l] = await Promise.all([
-        api('/dashboard/summary', t),
-        api('/devices', t),
-        api('/audit-logs', t)
-      ]);
-
-      setSummary(s);
-      setDevices(d.devices || []);
-      setLogs(l.logs || []);
-      setError('');
-    } catch (e) {
-      setError(e.message);
-
-      if (
-        e.message.toLowerCase().includes('session') ||
-        e.message.toLowerCase().includes('expired')
-      ) {
-        logout();
-      }
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function login(t, u) {
-    localStorage.setItem('nexus_token', t);
-    setToken(t);
-    setUser(u);
+  function hasPermission(key) {
+    return mainAdmin || user?.permissions?.[key] === true;
   }
 
   function logout() {
@@ -298,19 +644,56 @@ export default function App() {
     setLogs([]);
   }
 
-  useEffect(() => {
-    if (token) {
-      api('/auth/me', token)
-        .then(setUser)
-        .catch(logout);
-    }
-  }, []);
+  function login(t, u) {
+    localStorage.setItem('nexus_token', t);
+    setToken(t);
+    setUser(u);
+  }
 
   useEffect(() => {
-    if (token && user) {
-      load(token);
+    if (!token) return;
+
+    api('/auth/me', token)
+      .then(data => setUser(data.user || data))
+      .catch(logout);
+  }, [token]);
+
+  async function load() {
+    if (!token || !user) return;
+
+    setLoading(true);
+    setError('');
+
+    try {
+      if (tab === 'Overview' && hasPermission('dashboard')) {
+        const data = await api('/dashboard/summary', token);
+        setSummary(data);
+      }
+
+      if (tab === 'Devices' && hasPermission('devices')) {
+        const data = await api('/devices', token);
+        setDevices(data.devices || []);
+      }
+
+      if (tab === 'Audit Logs' && hasPermission('audit_logs')) {
+        const data = await api('/audit-logs', token);
+        setLogs(data.logs || []);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
     }
+  }
+
+  useEffect(() => {
+    load();
   }, [tab, token, user]);
+
+  function notify(message) {
+    setNotice(message);
+    setError('');
+  }
 
   async function refresh() {
     setNotice('');
@@ -318,24 +701,24 @@ export default function App() {
   }
 
   async function deviceCreated() {
-    await load();
-    setNotice('Device inventory record registered successfully.');
+    const data = await api('/devices', token);
+    setDevices(data.devices || []);
+    notify('Device inventory record registered.');
   }
 
   if (!token || !user) {
     return <Login onLogin={login} />;
   }
 
-  const nav = [
-    'Overview',
-    'Devices',
-    'Security Center',
-    'Applications',
-    'Employees',
-    'Reports',
-    'Audit Logs',
-    'Settings'
-  ];
+  const nav = NAV.filter(([, permission]) =>
+    hasPermission(permission)
+  );
+
+  if (mainAdmin) {
+    nav.push(['Admin Management', 'admin_management']);
+  }
+
+  const allowedTabs = nav.map(([name]) => name);
 
   return (
     <div className="shell">
@@ -350,25 +733,23 @@ export default function App() {
 
         <div className="side-label">WORKSPACE</div>
 
-        {nav.map(n => (
+        {nav.map(([name]) => (
           <button
-            key={n}
-            className={tab === n ? 'nav active' : 'nav'}
-            onClick={() => setTab(n)}
+            key={name}
+            className={tab === name ? 'nav active' : 'nav'}
+            onClick={() => setTab(name)}
           >
-            {n}
+            {name}
           </button>
         ))}
 
         <div className="side-bottom">
-          <div className="admin-dot">SA</div>
+          <div className="admin-dot">NP</div>
           <div>
-            <b>Super Admin</b>
+            <b>{mainAdmin ? 'Main Admin' : 'Admin'}</b>
             <small>{user.email}</small>
           </div>
-          <button className="logout" onClick={logout}>
-            ↗️
-          </button>
+          <button className="logout" onClick={logout}>↗</button>
         </div>
       </aside>
 
@@ -376,19 +757,14 @@ export default function App() {
         <header>
           <div>
             <p className="eyebrow">
-              DEVICE MANAGEMENT / {tab.toUpperCase()}
+              NEXUS PRO / {tab.toUpperCase()}
             </p>
             <h1>{tab}</h1>
           </div>
 
           <div className="header-right">
             <span className="secure">● Secure session</span>
-
-            <button
-              className="ghost"
-              onClick={refresh}
-              disabled={loading}
-            >
+            <button className="ghost" onClick={refresh} disabled={loading}>
               {loading ? 'Refreshing...' : '↻ Refresh'}
             </button>
           </div>
@@ -397,7 +773,17 @@ export default function App() {
         {error && <div className="notice">{error}</div>}
         {notice && <div className="success-notice">{notice}</div>}
 
-        {tab === 'Overview' && (
+        {!allowedTabs.includes(tab) && (
+          <section className="card panel">
+            <h3>Access restricted</h3>
+            <p className="muted">
+              Your administrator account does not have permission to view
+              this module.
+            </p>
+          </section>
+        )}
+
+        {tab === 'Overview' && hasPermission('dashboard') && (
           <>
             <div className="welcome">
               <div>
@@ -415,10 +801,10 @@ export default function App() {
                 ['Online', summary?.online ?? '—'],
                 ['Offline', summary?.offline ?? '—'],
                 ['Non-compliant', summary?.non_compliant ?? '—']
-              ].map(([a, b]) => (
-                <div className="card stat" key={a}>
-                  <p>{a}</p>
-                  <strong>{b}</strong>
+              ].map(([label, value]) => (
+                <div className="card stat" key={label}>
+                  <p>{label}</p>
+                  <strong>{value}</strong>
                   <small>Registered inventory</small>
                 </div>
               ))}
@@ -443,57 +829,25 @@ export default function App() {
                 <h3>Android Enterprise connection</h3>
                 <p className="muted">
                   {summary?.android_enterprise?.note ||
-                    'Checking integration…'}
+                    'Android Enterprise integration is not connected.'}
                 </p>
                 <span className="tag warn">NOT CONNECTED</span>
               </section>
             </div>
-
-            <section className="card panel">
-              <h3>Recent security events</h3>
-
-              {summary?.recent_events?.length ? (
-                summary.recent_events.map(e => (
-                  <div className="row" key={e.id}>
-                    <span className={`severity ${e.severity.toLowerCase()}`}>
-                      {e.severity}
-                    </span>
-                    <div>
-                      <b>{e.title}</b>
-                      <small>{e.description}</small>
-                    </div>
-                    <time>{new Date(e.created_at).toLocaleString()}</time>
-                  </div>
-                ))
-              ) : (
-                <p className="muted">
-                  No security events recorded. Live security telemetry is not connected.
-                </p>
-              )}
-            </section>
           </>
         )}
 
-        {tab === 'Devices' && (
+        {tab === 'Devices' && hasPermission('devices') && (
           <section className="card panel">
             <div className="device-toolbar">
               <div>
-                <h3>
-                  Device inventory
-                  <span className="count">{devices.length} records</span>
-                </h3>
-                <p className="muted">
-                  Register and review authorised device inventory.
-                </p>
+                <h3>Device inventory</h3>
+                <p className="muted">{devices.length} inventory records</p>
               </div>
 
               <button
-                className="primary add-device-button"
-                onClick={() => {
-                  setError('');
-                  setNotice('');
-                  setShowAddDevice(true);
-                }}
+                className="primary"
+                onClick={() => setShowAddDevice(true)}
               >
                 + Add Device
               </button>
@@ -517,65 +871,69 @@ export default function App() {
                   {devices.map(d => (
                     <tr key={d.id}>
                       <td>{d.asset_tag}</td>
-                      <td>
-                        {d.display_name}
-                        <small>
-                          {[d.manufacturer, d.model]
-                            .filter(Boolean)
-                            .join(' ')}
-                        </small>
-                      </td>
-                      <td>
-                        {d.ownership_type === 'COMPANY_OWNED'
-                          ? 'Company-owned'
-                          : 'Employee-owned'}
-                      </td>
+                      <td>{d.display_name}</td>
+                      <td>{d.ownership_type}</td>
                       <td>{d.assigned_to || '—'}</td>
-                      <td>
-                        <span className="tag">{d.status}</span>
-                      </td>
+                      <td>{d.status}</td>
                       <td>{d.compliance_status}</td>
                       <td>{d.enrolled ? 'Yes' : 'No'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-
-              {!devices.length && (
-                <p className="muted">
-                  No device inventory records yet. Use Add Device to register
-                  an inventory record.
-                </p>
-              )}
             </div>
+
+            {!devices.length && (
+              <p className="muted">No inventory records found.</p>
+            )}
           </section>
         )}
 
-        {tab === 'Audit Logs' && (
+        {tab === 'Audit Logs' && hasPermission('audit_logs') && (
           <section className="card panel">
             <h3>Administrative audit history</h3>
 
-            {logs.map(l => (
-              <div className="row" key={l.id}>
-                <span className="tag">{l.action}</span>
+            {logs.map(log => (
+              <div className="row" key={log.id}>
+                <span className="tag">{log.action}</span>
                 <div>
-                  <b>{l.actor_email}</b>
+                  <b>{log.actor_email}</b>
                   <small>
-                    {l.target_type || '—'} · {l.target_id || '—'}
+                    {log.target_type || '—'} · {log.target_id || '—'}
                   </small>
                 </div>
-                <time>{new Date(l.created_at).toLocaleString()}</time>
+                <time>{new Date(log.created_at).toLocaleString()}</time>
               </div>
             ))}
+
+            {!logs.length && (
+              <p className="muted">No audit entries found.</p>
+            )}
           </section>
         )}
 
-        {!['Overview', 'Devices', 'Audit Logs'].includes(tab) && (
+        {tab === 'Admin Management' && mainAdmin && (
+          <AdminManagement
+            token={token}
+            user={user}
+            notify={notify}
+          />
+        )}
+
+        {[
+          'Screen Control',
+          'Applications',
+          'Security Center',
+          'Employees',
+          'Reports',
+          'Settings'
+        ].includes(tab) && (
           <section className="card panel">
             <h3>{tab}</h3>
             <p className="muted">
-              Module scaffold. Connect the approved Android Enterprise
-              integration and configure policy before enabling live actions.
+              This module is not yet connected to a live Android Enterprise
+              service. Remote support and device actions must be implemented
+              with appropriate authorization and consent before activation.
             </p>
           </section>
         )}
