@@ -16,8 +16,9 @@ export async function requireAuth(req, res, next) {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
+const decoded = jwt.verify(token, process.env.JWT_SECRET, {
+  algorithms: ['HS256']
+});
     const { rows } = await pool.query(
       `SELECT id, email, role, status, permissions
        FROM admin_users
