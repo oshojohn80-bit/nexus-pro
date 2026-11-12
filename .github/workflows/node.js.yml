@@ -1,0 +1,39 @@
+name: NEXUS PRO Build Check
+
+on:
+  push:
+    branches:
+      - admin-management-build
+  pull_request:
+    branches:
+      - admin-management-build
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        working-directory: client
+        run: npm install
+
+      - name: Build frontend
+        working-directory: client
+        run: npm run build
+
+      - name: Install backend dependencies
+        working-directory: server
+        run: npm install
+
+      - name: Check backend JavaScript syntax
+        working-directory: server
+        run: |
+          find src -name '*.js' -print0 | xargs -0 -n1 node --check
