@@ -1,7 +1,5 @@
-import dotenv from 'dotenv';
+import 'dotenv/config';
 import { pool } from './pool.js';
-
-dotenv.config();
 
 async function migrate() {
   const client = await pool.connect();
@@ -9,7 +7,7 @@ async function migrate() {
   try {
     await client.query('BEGIN');
 
-    // Preserve existing accounts and add management fields.
+    // Add administrator management fields.
     await client.query(`
       ALTER TABLE admin_users
         ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ACTIVE',
@@ -20,7 +18,7 @@ async function migrate() {
         ADD COLUMN IF NOT EXISTS suspended_by TEXT;
     `);
 
-    // Replace the existing single-role restriction.
+    // Update permitted administrator roles.
     await client.query(`
       ALTER TABLE admin_users
       DROP CONSTRAINT IF EXISTS admin_users_role_check;
@@ -32,7 +30,7 @@ async function migrate() {
       CHECK (role IN ('SUPER_ADMIN', 'MAIN_ADMIN', 'ADMIN'));
     `);
 
-    // Make the migration safely repeatable.
+    // Validate account status.
     await client.query(`
       ALTER TABLE admin_users
       DROP CONSTRAINT IF EXISTS admin_users_status_check;
@@ -44,6 +42,7 @@ async function migrate() {
       CHECK (status IN ('ACTIVE', 'SUSPENDED'));
     `);
 
+    // Ensure permissions are stored as a JSON object.
     await client.query(`
       ALTER TABLE admin_users
       DROP CONSTRAINT IF EXISTS admin_users_permissions_object_check;
@@ -55,7 +54,7 @@ async function migrate() {
       CHECK (jsonb_typeof(permissions) = 'object');
     `);
 
-    // Preserve existing audit records and add structured details.
+    // Add structured audit details.
     await client.query(`
       ALTER TABLE audit_logs
       ADD COLUMN IF NOT EXISTS details JSONB NOT NULL DEFAULT '{}'::jsonb;
@@ -66,7 +65,7 @@ async function migrate() {
       ON admin_users(role, status);
     `);
 
-    // Protect the last active Main Admin.
+    // Prevent removal or suspension of the last active Main Admin.
     await client.query(`
       CREATE OR REPLACE FUNCTION protect_last_main_admin()
       RETURNS TRIGGER AS $$
@@ -130,12 +129,68 @@ async function migrate() {
       EXECUTE FUNCTION protect_last_main_admin();
     `);
 
+    // Enforce a maximum of three fixed Main Admin positions.
+    await client.query(`
+      CREATE OR REPLACE FUNCTION enforce_main_admin_limit()
+      RETURNS TRIGGER AS $$
+      DECLARE
+        existing_count INTEGER;
+      BEGIN
+        IF TG_OP = 'INSERT' THEN
+          IF NEW.role IN ('SUPER_ADMIN', 'MAIN_ADMIN') THEN
+            PERFORM pg_advisory_xact_lock(741852963);
+
+            SELECT COUNT(*) INTO existing_count
+            FROM admin_users
+            WHERE role IN ('SUPER_ADMIN', 'MAIN_ADMIN');
+
+            IF existing_count >= 3 THEN
+              RAISE EXCEPTION
+                'All three fixed Main Admin positions are occupied.';
+            END IF;
+          END IF;
+
+        ELSIF NEW.role IS DISTINCT FROM OLD.role THEN
+          IF NEW.role IN ('SUPER_ADMIN', 'MAIN_ADMIN') THEN
+            PERFORM pg_advisory_xact_lock(741852963);
+
+            SELECT COUNT(*) INTO existing_count
+            FROM admin_users
+            WHERE role IN ('SUPER_ADMIN', 'MAIN_ADMIN')
+              AND id <> OLD.id;
+
+            IF existing_count >= 3 THEN
+              RAISE EXCEPTION
+                'All three fixed Main Admin positions are occupied.';
+            END IF;
+          END IF;
+        END IF;
+
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+
+    await client.query(`
+      DROP TRIGGER IF EXISTS enforce_main_admin_limit_trigger
+      ON admin_users;
+    `);
+
+    await client.query(`
+      CREATE TRIGGER enforce_main_admin_limit_trigger
+      BEFORE INSERT OR UPDATE OF role ON admin_users
+      FOR EACH ROW
+      EXECUTE FUNCTION enforce_main_admin_limit();
+    `);
+
     await client.query('COMMIT');
 
     console.log('NEXUS PRO admin permissions migration completed.');
+
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
+
   } finally {
     client.release();
   }
@@ -148,51 +203,4 @@ migrate()
   })
   .finally(async () => {
     await pool.end();
-    -- Enforce a maximum of three fixed Main Admin positions.
-CREATE OR REPLACE FUNCTION enforce_main_admin_limit()
-RETURNS TRIGGER AS $$
-DECLARE
-  existing_count INTEGER;
-BEGIN
-  IF TG_OP = 'INSERT' THEN
-    IF NEW.role IN ('SUPER_ADMIN', 'MAIN_ADMIN') THEN
-      PERFORM pg_advisory_xact_lock(741852963);
-
-      SELECT COUNT(*) INTO existing_count
-      FROM admin_users
-      WHERE role IN ('SUPER_ADMIN', 'MAIN_ADMIN');
-
-      IF existing_count >= 3 THEN
-        RAISE EXCEPTION
-          'All three fixed Main Admin positions are occupied.';
-      END IF;
-    END IF;
-
-  ELSIF NEW.role IS DISTINCT FROM OLD.role THEN
-    IF NEW.role IN ('SUPER_ADMIN', 'MAIN_ADMIN') THEN
-      PERFORM pg_advisory_xact_lock(741852963);
-
-      SELECT COUNT(*) INTO existing_count
-      FROM admin_users
-      WHERE role IN ('SUPER_ADMIN', 'MAIN_ADMIN')
-        AND id <> OLD.id;
-
-      IF existing_count >= 3 THEN
-        RAISE EXCEPTION
-          'All three fixed Main Admin positions are occupied.';
-      END IF;
-    END IF;
-  END IF;
-
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS enforce_main_admin_limit_trigger
-ON admin_users;
-
-CREATE TRIGGER enforce_main_admin_limit_trigger
-BEFORE INSERT OR UPDATE OF role ON admin_users
-FOR EACH ROW
-EXECUTE FUNCTION enforce_main_admin_limit();
   });
