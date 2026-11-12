@@ -288,32 +288,39 @@ function AdminManagement({ token, user, notify }) {
     }));
   }
 
-  async function createAdmin(e) {
-    e.preventDefault();
-    setError('');
+ async function createAdmin(e) {
+  e.preventDefault();
+  setError('');
 
-    try {
-      await api('/admins', token, {
-        method: 'POST',
-        body: JSON.stringify(form)
-      });
+  try {
+    const payload = {
+      ...form,
+      permissions: form.role === 'MAIN_ADMIN'
+        ? {}
+        : form.permissions
+    };
 
-      setShowCreate(false);
-      setForm({
-        email: '',
-        password: '',
-        role: 'ADMIN',
-        currentPassword: '',
-        permissions: { ...EMPTY_PERMISSIONS }
-      });
+    await api('/admins', token, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
 
-      notify('Administrator account created.');
-      await loadAdmins();
-    } catch (err) {
-      setError(err.message);
-    }
+    setShowCreate(false);
+
+    setForm({
+      email: '',
+      password: '',
+      role: 'ADMIN',
+      currentPassword: '',
+      permissions: { ...EMPTY_PERMISSIONS }
+    });
+
+    notify('Administrator account created.');
+    await loadAdmins();
+  } catch (err) {
+    setError(err.message);
   }
-
+}
   async function accountAction(admin, action) {
     const actionLabels = {
       suspend: 'suspend',
