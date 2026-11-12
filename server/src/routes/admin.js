@@ -216,10 +216,11 @@ router.post('/', requireMainAdmin, async (req, res, next) => {
       });
     }
 
-    if (String(error.message || '').includes('All three fixed Main Admin positions')) {
-        error: error.message
-      });
-    }
+   if (String(error.message || '').includes('All three fixed Main Admin positions')) {
+  return res.status(409).json({
+    error: error.message
+  });
+}
 
     next(error);
   } finally {
