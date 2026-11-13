@@ -247,6 +247,9 @@ function AdminManagement({ token, user, notify }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [showCreate, setShowCreate] = useState(false);
+  const [editingAdmin, setEditingAdmin] = useState(null);
+  const [permissions, setPermissions] = useState({ ...EMPTY_PERMISSIONS });
+  const [currentPassword, setCurrentPassword] = useState('');
 
   const [form, setForm] = useState({
     email: '',
@@ -278,7 +281,7 @@ function AdminManagement({ token, user, notify }) {
     setForm(old => ({ ...old, [field]: value }));
   }
 
-  function updatePermission(key, value) {
+  function updateFormPermission(key, value) {
     setForm(old => ({
       ...old,
       permissions: {
@@ -288,55 +291,98 @@ function AdminManagement({ token, user, notify }) {
     }));
   }
 
- async function createAdmin(e) {
-  e.preventDefault();
-  setError('');
+  async function createAdmin(e) {
+    e.preventDefault();
+    setError('');
 
-  try {
-    const payload = {
-      ...form,
-      permissions: form.role === 'MAIN_ADMIN'
-        ? {}
-        : form.permissions
-    };
+    try {
+      const payload = {
+        ...form,
+        permissions: form.role === 'MAIN_ADMIN'
+          ? {}
+          : form.permissions
+      };
 
-    await api('/admins', token, {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    });
+      await api('/admins', token, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
 
-    setShowCreate(false);
+      setShowCreate(false);
+      setForm({
+        email: '',
+        password: '',
+        role: 'ADMIN',
+        currentPassword: '',
+        permissions: { ...EMPTY_PERMISSIONS }
+      });
 
-    setForm({
-      email: '',
-      password: '',
-      role: 'ADMIN',
-      currentPassword: '',
-      permissions: { ...EMPTY_PERMISSIONS }
-    });
-
-    notify('Administrator account created.');
-    await loadAdmins();
-  } catch (err) {
-    setError(err.message);
+      notify('Administrator account created.');
+      await loadAdmins();
+    } catch (err) {
+      setError(err.message);
+    }
   }
-}
+
+  function openPermissions(admin) {
+    setEditingAdmin(admin);
+
+    setPermissions({
+      ...EMPTY_PERMISSIONS,
+      ...(admin.permissions || {})
+    });
+
+    setCurrentPassword('');
+    setError('');
+  }
+
+  async function savePermissions(e) {
+    e.preventDefault();
+
+    if (!editingAdmin || !currentPassword) {
+      setError('Enter your Main Admin password.');
+      return;
+    }
+
+    setBusy(true);
+    setError('');
+
+    try {
+      await api(`/admins/${editingAdmin.id}/permissions`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          permissions,
+          currentPassword
+        })
+      });
+
+      notify('Permissions saved successfully.');
+      setEditingAdmin(null);
+      setCurrentPassword('');
+      await loadAdmins();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function accountAction(admin, action) {
-    const actionLabels = {
+    const labels = {
       suspend: 'suspend',
       reactivate: 'reactivate',
       delete: 'permanently delete'
     };
 
     if (!window.confirm(
-      `Are you sure you want to ${actionLabels[action]} ${admin.email}?`
+      `Are you sure you want to ${labels[action]} ${admin.email}?`
     )) return;
 
-    const currentPassword = window.prompt(
-      'Enter your own Main Admin password to confirm this action:'
+    const password = window.prompt(
+      'Enter your current Main Admin password:'
     );
 
-    if (!currentPassword) return;
+    if (!password) return;
 
     setError('');
 
@@ -344,48 +390,16 @@ function AdminManagement({ token, user, notify }) {
       if (action === 'delete') {
         await api(`/admins/${admin.id}`, token, {
           method: 'DELETE',
-          body: JSON.stringify({ currentPassword })
+          body: JSON.stringify({ currentPassword: password })
         });
       } else {
         await api(`/admins/${admin.id}/${action}`, token, {
           method: 'PATCH',
-          body: JSON.stringify({ currentPassword })
+          body: JSON.stringify({ currentPassword: password })
         });
       }
 
-      notify(`Account ${action} action completed.`);
-      await loadAdmins();
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-
-  async function editPermissions(admin) {
-    const currentPassword = window.prompt(
-      'Enter your Main Admin password to change permissions:'
-    );
-
-    if (!currentPassword) return;
-
-    const permissions = {};
-
-    for (const [key, label] of PERMISSIONS) {
-      permissions[key] = window.confirm(
-        `Allow ${admin.email} to access ${label}?\n\nOK = Allow\nCancel = Deny`
-      );
-    }
-
-    if (!window.confirm(
-      'Save these permissions for ' + admin.email + '?'
-    )) return;
-
-    try {
-      await api(`/admins/${admin.id}/permissions`, token, {
-        method: 'PATCH',
-        body: JSON.stringify({ permissions, currentPassword })
-      });
-
-      notify('Administrator permissions updated.');
+      notify(`Administrator ${action} completed.`);
       await loadAdmins();
     } catch (err) {
       setError(err.message);
@@ -396,6 +410,97 @@ function AdminManagement({ token, user, notify }) {
     ['SUPER_ADMIN', 'MAIN_ADMIN'].includes(a.role)
   ).length;
 
+  if (editingAdmin) {
+    return (
+      <section className="card panel">
+        <div className="device-toolbar">
+          <div>
+            <p className="eyebrow">ACCESS CONTROL / PERMISSIONS</p>
+            <h2>Permissions Management</h2>
+            <p className="muted">{editingAdmin.email}</p>
+          </div>
+
+          <button
+            className="ghost"
+            type="button"
+            onClick={() => setEditingAdmin(null)}
+          >
+            ← Back
+          </button>
+        </div>
+
+        <form onSubmit={savePermissions}>
+          <div className="permission-grid">
+            {PERMISSIONS.map(([key, label]) => (
+              <label key={key} className="permission-option">
+                <input
+                  type="checkbox"
+                  checked={permissions[key] === true}
+                  onChange={e =>
+                    setPermissions(old => ({
+                      ...old,
+                      [key]: e.target.checked
+                    }))
+                  }
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+
+          <div className="form-actions">
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => setPermissions({ ...EMPTY_PERMISSIONS })}
+            >
+              Clear All
+            </button>
+
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => setPermissions(
+                Object.fromEntries(
+                  PERMISSIONS.map(([key]) => [key, true])
+                )
+              )}
+            >
+              Select All
+            </button>
+          </div>
+
+          <label>
+            Confirm with your current Main Admin password
+            <input
+              type="password"
+              value={currentPassword}
+              onChange={e => setCurrentPassword(e.target.value)}
+              required
+              autoComplete="current-password"
+            />
+          </label>
+
+          {error && <div className="notice">{error}</div>}
+
+          <div className="form-actions">
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => setEditingAdmin(null)}
+            >
+              Cancel
+            </button>
+
+            <button className="primary" disabled={busy}>
+              {busy ? 'Saving...' : 'Save Permissions'}
+            </button>
+          </div>
+        </form>
+      </section>
+    );
+  }
+
   return (
     <section className="card panel">
       <div className="device-toolbar">
@@ -403,11 +508,14 @@ function AdminManagement({ token, user, notify }) {
           <p className="eyebrow">ACCESS CONTROL</p>
           <h2>Admin Management</h2>
           <p className="muted">
-            Manage the three fixed Main Admin positions and ordinary Admins.
+            Manage Main Admin positions and ordinary Admin accounts.
           </p>
         </div>
 
-        <button className="primary" onClick={() => setShowCreate(!showCreate)}>
+        <button
+          className="primary"
+          onClick={() => setShowCreate(!showCreate)}
+        >
           + Add Admin
         </button>
       </div>
@@ -421,9 +529,7 @@ function AdminManagement({ token, user, notify }) {
 
         <div className="card stat">
           <p>Ordinary Admins</p>
-          <strong>
-            {admins.filter(a => a.role === 'ADMIN').length}
-          </strong>
+          <strong>{admins.filter(a => a.role === 'ADMIN').length}</strong>
           <small>Individually permissioned</small>
         </div>
       </div>
@@ -454,7 +560,6 @@ function AdminManagement({ token, user, notify }) {
               required
               autoComplete="new-password"
             />
-            <small>Use at least 14 characters.</small>
           </label>
 
           <label>
@@ -470,14 +575,17 @@ function AdminManagement({ token, user, notify }) {
 
           {form.role === 'ADMIN' && (
             <>
-              <h3>Individual permissions</h3>
+              <h3>Initial permissions</h3>
+
               <div className="permission-grid">
                 {PERMISSIONS.map(([key, label]) => (
                   <label key={key} className="permission-option">
                     <input
                       type="checkbox"
                       checked={form.permissions[key]}
-                      onChange={e => updatePermission(key, e.target.checked)}
+                      onChange={e =>
+                        updateFormPermission(key, e.target.checked)
+                      }
                     />
                     {label}
                   </label>
@@ -491,7 +599,9 @@ function AdminManagement({ token, user, notify }) {
             <input
               type="password"
               value={form.currentPassword}
-              onChange={e => updateForm('currentPassword', e.target.value)}
+              onChange={e =>
+                updateForm('currentPassword', e.target.value)
+              }
               required
               autoComplete="current-password"
             />
@@ -505,12 +615,13 @@ function AdminManagement({ token, user, notify }) {
             >
               Cancel
             </button>
+
             <button className="primary">Create account</button>
           </div>
         </form>
       )}
 
-      {busy && <p className="muted">Loading administrator accounts...</p>}
+      {busy && <p className="muted">Loading administrators...</p>}
 
       <div className="table-wrap">
         <table>
@@ -548,60 +659,35 @@ function AdminManagement({ token, user, notify }) {
                       <span className="muted">Current account protected</span>
                     ) : (
                       <div className="admin-actions">
-                        {main ? (
-                          <>
-                            <button
-                              className="ghost"
-                              onClick={() => accountAction(
-                                admin,
-                                admin.status === 'SUSPENDED'
-                                  ? 'reactivate'
-                                  : 'suspend'
-                              )}
-                            >
-                              {admin.status === 'SUSPENDED'
-                                ? 'Reactivate'
-                                : 'Suspend'}
-                            </button>
-
-                            <button
-                              className="ghost danger"
-                              onClick={() => accountAction(admin, 'delete')}
-                            >
-                              Delete
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <button
-                              className="ghost"
-                              onClick={() => editPermissions(admin)}
-                            >
-                              Permissions
-                            </button>
-
-                            <button
-                              className="ghost"
-                              onClick={() => accountAction(
-                                admin,
-                                admin.status === 'SUSPENDED'
-                                  ? 'reactivate'
-                                  : 'suspend'
-                              )}
-                            >
-                              {admin.status === 'SUSPENDED'
-                                ? 'Reactivate'
-                                : 'Suspend'}
-                            </button>
-
-                            <button
-                              className="ghost danger"
-                              onClick={() => accountAction(admin, 'delete')}
-                            >
-                              Delete
-                            </button>
-                          </>
+                        {!main && (
+                          <button
+                            className="ghost"
+                            onClick={() => openPermissions(admin)}
+                          >
+                            Manage Permissions
+                          </button>
                         )}
+
+                        <button
+                          className="ghost"
+                          onClick={() => accountAction(
+                            admin,
+                            admin.status === 'SUSPENDED'
+                              ? 'reactivate'
+                              : 'suspend'
+                          )}
+                        >
+                          {admin.status === 'SUSPENDED'
+                            ? 'Reactivate'
+                            : 'Suspend'}
+                        </button>
+
+                        <button
+                          className="ghost danger"
+                          onClick={() => accountAction(admin, 'delete')}
+                        >
+                          Delete
+                        </button>
                       </div>
                     )}
                   </td>
@@ -613,9 +699,8 @@ function AdminManagement({ token, user, notify }) {
       </div>
 
       <p className="form-note">
-        Main Admins have equal authority. Each can manage the other Main Admin
-        accounts. A suspended Main Admin continues to occupy one of the three
-        fixed positions. The last active Main Admin is protected by the backend.
+        Main Admins automatically have full access. The last active Main Admin
+        is protected by the backend.
       </p>
     </section>
   );
