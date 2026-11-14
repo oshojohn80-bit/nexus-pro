@@ -1,99 +1,114 @@
+import { Router } from 'express';
+import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { pool } from '../db/pool.js';
+import { requireAuth } from '../middleware/auth.js';
 
-const MAIN_ADMIN_ROLES = ['SUPER_ADMIN', 'MAIN_ADMIN'];
+const router = Router();
 
-export async function requireAuth(req, res, next) {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ')
-    ? header.slice(7)
-    : '';
-
-  if (!token) {
-    return res.status(401).json({
-      error: 'Authentication required.'
-    });
-  }
-
+router.post('/login', async (req, res, next) => {
   try {
-const decoded = jwt.verify(token, process.env.JWT_SECRET, {
-  algorithms: ['HS256']
-});
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+
+    if (!email || !password) {
+      return res.status(400).json({
+        error: 'Email and password are required.'
+      });
+    }
+
     const { rows } = await pool.query(
-      `SELECT id, email, role, status, permissions
+      `SELECT
+         id,
+         email,
+         password_hash,
+         role,
+         COALESCE(to_jsonb(admin_users)->>'status', 'ACTIVE') AS status,
+         to_jsonb(admin_users)->>'organization_id' AS organization_id
        FROM admin_users
-       WHERE id = $1`,
-      [decoded.sub]
+       WHERE email = $1`,
+      [email]
     );
 
     const admin = rows[0];
 
-    if (!admin || admin.status !== 'ACTIVE') {
-      return res.status(403).json({
-        error: 'This administrator account is inactive or suspended.'
-      });
-    }
-
-    if (
-      !MAIN_ADMIN_ROLES.includes(admin.role) &&
-      admin.role !== 'ADMIN'
-    ) {
-      return res.status(403).json({
-        error: 'This account does not have dashboard access.'
-      });
-    }
-
-    req.user = {
-      sub: String(admin.id),
-      email: admin.email,
-      role: admin.role,
-      permissions: admin.permissions || {},
-      organization_id: decoded.organization_id ?? null
-    };
-
-    next();
-  } catch (error) {
-    if (
-      error.name === 'JsonWebTokenError' ||
-      error.name === 'TokenExpiredError'
-    ) {
+    // Use the same response for unknown users and incorrect passwords.
+    if (!admin || !(await bcrypt.compare(password, admin.password_hash))) {
       return res.status(401).json({
-        error: 'Your session is invalid or has expired. Please sign in again.'
+        error: 'Invalid email or password.'
       });
     }
 
-    next(error);
-  }
-}
-
-export function requirePermission(permission) {
-  return (req, res, next) => {
-    const isMainAdmin = MAIN_ADMIN_ROLES.includes(req.user?.role);
-
-    if (isMainAdmin) {
-      return next();
-    }
-
-    if (
-      req.user?.role !== 'ADMIN' ||
-      req.user.permissions?.[permission] !== true
-    ) {
+    if (String(admin.status).toUpperCase() !== 'ACTIVE') {
       return res.status(403).json({
-        error: 'You do not have permission to perform this action.'
+        error: 'This administrator account is not active. Contact your Super Admin.'
       });
     }
 
-    next();
-  };
-}
-export function requireMainAdmin(req, res, next) {
-  const allowedRoles = ['SUPER_ADMIN', 'MAIN_ADMIN'];
+    // Tenant administrator access remains disabled until tenant isolation
+    // has been implemented and verified across every protected API route.
+    if (admin.role !== 'SUPER_ADMIN') {
+      return res.status(403).json({
+        error: 'Organisation administrator access is not enabled yet.'
+      });
+    }
 
-  if (!req.user || !allowedRoles.includes(req.user.role)) {
-    return res.status(403).json({
-      error: 'Main Admin access required.'
+    if (!process.env.JWT_SECRET) {
+      return res.status(500).json({
+        error: 'Authentication is not configured on the server.'
+      });
+    }
+
+    const organizationId = admin.organization_id
+      ? Number(admin.organization_id)
+      : null;
+
+    const token = jwt.sign(
+      {
+        sub: String(admin.id),
+        email: admin.email,
+        role: admin.role,
+        organization_id: organizationId
+      },
+      process.env.JWT_SECRET,
+      {
+        expiresIn: process.env.JWT_EXPIRES_IN || '8h'
+      }
+    );
+
+    await pool.query(
+      `INSERT INTO audit_logs
+       (actor_email, action, target_type, target_id)
+       VALUES ($1, $2, $3, $4)`,
+      [
+        admin.email,
+        'ADMIN_LOGIN',
+        'ADMIN_USER',
+        String(admin.id)
+      ]
+    );
+
+    return res.json({
+      token,
+      user: {
+        id: admin.id,
+        email: admin.email,
+        role: admin.role,
+        organization_id: organizationId
+      }
     });
+  } catch (err) {
+    return next(err);
   }
+});
 
-  next();
-}
+router.get('/me', requireAuth, async (req, res) => {
+  return res.json({
+    id: Number(req.user.sub),
+    email: req.user.email,
+    role: req.user.role,
+    organization_id: req.user.organization_id ?? null
+  });
+});
+
+export default router;
