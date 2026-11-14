@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS organisations (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 2. Create the internal organisation
+-- 2. Create the internal NEXUS PRO organisation
 INSERT INTO organisations (name, slug)
 VALUES ('NEXUS PRO Internal', 'nexus-pro-internal')
 ON CONFLICT (slug) DO NOTHING;
@@ -42,12 +42,11 @@ SET organization_id = (
 )
 WHERE organization_id IS NULL;
 
--- 5. Require every device to have an organisation
+-- 5. Require every device to belong to an organisation
 ALTER TABLE devices
 ALTER COLUMN organization_id SET NOT NULL;
 
--- 6. Replace global asset-tag uniqueness with
--- organisation-level uniqueness
+-- 6. Make asset tags unique within each organisation
 ALTER TABLE devices
 DROP CONSTRAINT IF EXISTS devices_asset_tag_key;
 
@@ -55,16 +54,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS
 devices_organisation_asset_tag_unique
 ON devices (organization_id, asset_tag);
 
--- 7. Configure administrator roles
+-- 7. Replace the old administrator role constraint
 ALTER TABLE admin_users
 DROP CONSTRAINT IF EXISTS admin_users_role_check;
 
 ALTER TABLE admin_users
 ADD CONSTRAINT admin_users_role_check
 CHECK (
-  (role = 'SUPER_ADMIN' AND organization_id IS NULL)
+  (
+    role IN ('SUPER_ADMIN', 'MAIN_ADMIN')
+    AND organization_id IS NULL
+  )
   OR
-  (role = 'ORG_ADMIN' AND organization_id IS NOT NULL)
+  (
+    role = 'ORG_ADMIN'
+    AND organization_id IS NOT NULL
+  )
+  OR
+  (
+    role = 'ADMIN'
+  )
 );
 
 -- 8. Add organisation indexes
