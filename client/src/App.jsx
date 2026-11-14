@@ -326,18 +326,17 @@ export default function App() {
     return <Login onLogin={login} />;
   }
 
- const nav = [
-    'Overview',
-    'Devices',
-    'Security Center',
-    'Applications',
-    'Employees',
-    'Reports',
-    'Audit Logs',
-    'Settings',
-    'NEXUS Suite'
-  ];
-
+const nav = [
+  'Overview',
+  'Devices',
+  'Security Center',
+  'Applications',
+  'Employees',
+  'Reports',
+  'Audit Logs',
+  'Settings',
+  'NEXUS Suite'
+];
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -571,7 +570,7 @@ export default function App() {
           </section>
         )}
 
-        {tab === 'NEXUS Suite' && (
+     {tab === 'NEXUS Suite' && (
   <section className="card panel" style={{ padding: 0, overflow: 'hidden' }}>
     <iframe
       src="/nexus-suite/NEXUS_PRO_v39_signin_audit_frontendperfect.html"
@@ -585,16 +584,16 @@ export default function App() {
     />
   </section>
 )}
-{!['Overview', 'Devices', 'Audit Logs', 'NEXUS Suite'].includes(tab) && (      
-          <section className="card panel">
-            <h3>{tab}</h3>
-            <p className="muted">
-              Module scaffold. Connect the approved Android Enterprise
-              integration and configure policy before enabling live actions.
-            </p>
-          </section>
-        )}
 
+{!['Overview', 'Devices', 'Audit Logs', 'NEXUS Suite'].includes(tab) && (
+  <section className="card panel">
+    <h3>{tab}</h3>
+    <p className="muted">
+      Module scaffold. Connect the approved Android Enterprise
+      integration and configure policy before enabling live actions.
+    </p>
+  </section>
+)}
         <footer>
           NEXUS PRO ENTERPRISE
           <span>
