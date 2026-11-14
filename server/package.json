@@ -8,7 +8,10 @@
   "dev": "node --watch src/index.js",
   "db:init": "node src/db/init.js",
   "admin:create": "node src/db/create-admin.js",
-  "db:migrate-admins": "node src/db/migrate-admin-permissions.js"
+  "db:migrate-admins": "node src/db/migrate-admin-permissions.js",
+   "db:migrate-multi-tenant": "node src/db/migrate-multi-tenant.js",
+"db:migrate-nexus-roles": "node src/db/migrate-nexus-roles.js"
+   
 },
   "dependencies": {"google-auth-library": "^11.3.4",
     "bcryptjs": "^2.4.3",
