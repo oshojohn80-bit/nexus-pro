@@ -6,8 +6,6 @@ import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
-const MAIN_ADMIN_ROLES = ['SUPER_ADMIN', 'MAIN_ADMIN'];
-
 router.post('/login', async (req, res, next) => {
   try {
     const email = String(req.body?.email || '').trim().toLowerCase();
@@ -25,8 +23,7 @@ router.post('/login', async (req, res, next) => {
          email,
          password_hash,
          role,
-         status,
-         permissions,
+         COALESCE(to_jsonb(admin_users)->>'status', 'ACTIVE') AS status,
          to_jsonb(admin_users)->>'organization_id' AS organization_id
        FROM admin_users
        WHERE email = $1`,
@@ -35,41 +32,43 @@ router.post('/login', async (req, res, next) => {
 
     const admin = rows[0];
 
+    // Use the same response for unknown users and incorrect passwords.
     if (!admin || !(await bcrypt.compare(password, admin.password_hash))) {
       return res.status(401).json({
         error: 'Invalid email or password.'
       });
     }
 
-    if (admin.status !== 'ACTIVE') {
+    if (String(admin.status).toUpperCase() !== 'ACTIVE') {
       return res.status(403).json({
-        error: 'This administrator account is inactive or suspended.'
+        error: 'This administrator account is not active. Contact your Super Admin.'
       });
     }
 
-    if (
-      !MAIN_ADMIN_ROLES.includes(admin.role) &&
-      admin.role !== 'ADMIN'
-    ) {
+    // Tenant administrator access remains disabled until tenant isolation
+    // has been implemented and verified across every protected API route.
+    if (admin.role !== 'SUPER_ADMIN') {
       return res.status(403).json({
-        error: 'This account does not have dashboard access.'
+        error: 'Organisation administrator access is not enabled yet.'
       });
     }
-await pool.query(
-  `UPDATE admin_users
-   SET last_login_at = NOW(),
-       updated_at = NOW()
-   WHERE id = $1`,
-  [admin.id]
-);
+
+    if (!process.env.JWT_SECRET) {
+      return res.status(500).json({
+        error: 'Authentication is not configured on the server.'
+      });
+    }
+
+    const organizationId = admin.organization_id
+      ? Number(admin.organization_id)
+      : null;
+
     const token = jwt.sign(
       {
         sub: String(admin.id),
         email: admin.email,
         role: admin.role,
-        organization_id: admin.organization_id
-          ? Number(admin.organization_id)
-          : null
+        organization_id: organizationId
       },
       process.env.JWT_SECRET,
       {
@@ -89,31 +88,25 @@ await pool.query(
       ]
     );
 
-    res.json({
+    return res.json({
       token,
       user: {
         id: admin.id,
         email: admin.email,
         role: admin.role,
-        status: admin.status,
-        permissions: admin.permissions || {},
-        organization_id: admin.organization_id
-          ? Number(admin.organization_id)
-          : null
+        organization_id: organizationId
       }
     });
-
   } catch (err) {
-    next(err);
+    return next(err);
   }
 });
 
 router.get('/me', requireAuth, async (req, res) => {
-  res.json({
+  return res.json({
     id: Number(req.user.sub),
     email: req.user.email,
     role: req.user.role,
-    permissions: req.user.permissions || {},
     organization_id: req.user.organization_id ?? null
   });
 });
