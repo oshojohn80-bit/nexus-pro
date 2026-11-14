@@ -761,11 +761,13 @@ export default function App() {
         const data = await api('/dashboard/summary', token);
         setSummary(data);
       }
-
-      if (tab === 'Devices' && hasPermission('devices')) {
-        const data = await api('/devices', token);
-        setDevices(data.devices || []);
-      }
+if (
+  (tab === 'Devices' && hasPermission('devices')) ||
+  (tab === 'Screen Control' && hasPermission('screen_control'))
+) {
+  const data = await api('/devices', token);
+  setDevices(data.devices || []);
+}
 
       if (tab === 'Audit Logs' && hasPermission('audit_logs')) {
         const data = await api('/audit-logs', token);
