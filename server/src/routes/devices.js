@@ -6,11 +6,26 @@ const router = Router();
 
 router.use(requireAuth);
 
-// Super Admin can view all devices.
+const VALID_OWNERSHIP_TYPES = new Set([
+  'COMPANY_OWNED',
+  'EMPLOYEE_OWNED'
+]);
+
+function cleanOptionalString(value) {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  return String(value).trim() || null;
+}
+
+// List registered device inventory.
 router.get('/', async (_req, res, next) => {
   try {
     const { rows } = await pool.query(
-      'SELECT * FROM devices ORDER BY created_at DESC'
+      `SELECT *
+       FROM devices
+       ORDER BY created_at DESC`
     );
 
     res.json({ devices: rows });
@@ -19,30 +34,48 @@ router.get('/', async (_req, res, next) => {
   }
 });
 
-// Register a device.
+// Register a device inventory record.
+// This does not enroll the device or enable remote management.
 router.post('/', async (req, res, next) => {
-  try {
-    const {
-      asset_tag,
-      display_name,
-      manufacturer = null,
-      model = null,
-      ownership_type,
-      assigned_to = null
-    } = req.body || {};
+  const {
+    asset_tag,
+    display_name,
+    manufacturer,
+    model,
+    ownership_type,
+    assigned_to
+  } = req.body || {};
 
-    if (
-      !asset_tag ||
-      !display_name ||
-      !['COMPANY_OWNED', 'EMPLOYEE_OWNED'].includes(ownership_type)
-    ) {
-      return res.status(400).json({
-        error: 'asset_tag, display_name, and a valid ownership_type are required.'
-      });
-    }
+  const normalizedAssetTag =
+    typeof asset_tag === 'string' ? asset_tag.trim() : '';
+
+  const normalizedDisplayName =
+    typeof display_name === 'string' ? display_name.trim() : '';
+
+  const normalizedOwnershipType =
+    typeof ownership_type === 'string'
+      ? ownership_type.trim().toUpperCase()
+      : '';
+
+  if (
+    !normalizedAssetTag ||
+    !normalizedDisplayName ||
+    !VALID_OWNERSHIP_TYPES.has(normalizedOwnershipType)
+  ) {
+    return res.status(400).json({
+      error:
+        'asset_tag, display_name, and a valid ownership_type are required.'
+    });
+  }
+
+  let client;
+
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
 
     // Detect whether the multi-tenant migration has been applied.
-    const schemaCheck = await pool.query(`
+    const schemaCheck = await client.query(`
       SELECT EXISTS (
         SELECT 1
         FROM information_schema.columns
@@ -54,89 +87,104 @@ router.post('/', async (req, res, next) => {
 
     let result;
 
-    if (schemaCheck.rows[0].migrated) {
-      result = await pool.query(
+    const values = [
+      normalizedAssetTag,
+      normalizedDisplayName,
+      cleanOptionalString(manufacturer),
+      cleanOptionalString(model),
+      normalizedOwnershipType,
+      cleanOptionalString(assigned_to)
+    ];
+
+    if (schemaCheck.rows[0]?.migrated) {
+      result = await client.query(
         `INSERT INTO devices (
-          asset_tag,
-          display_name,
-          manufacturer,
-          model,
-          ownership_type,
-          assigned_to,
-          organization_id
-        )
-        SELECT $1, $2, $3, $4, $5, $6, id
-        FROM organisations
-        WHERE slug = 'nexus-pro-internal'
-        RETURNING *`,
-        [
-          String(asset_tag).trim(),
-          String(display_name).trim(),
-          manufacturer,
-          model,
-          ownership_type,
-          assigned_to
-        ]
+           asset_tag,
+           display_name,
+           manufacturer,
+           model,
+           ownership_type,
+           assigned_to,
+           organization_id
+         )
+         SELECT $1, $2, $3, $4, $5, $6, id
+         FROM organisations
+         WHERE slug = 'nexus-pro-internal'
+         RETURNING *`,
+        values
       );
 
       if (!result.rows[0]) {
+        await client.query('ROLLBACK');
         return res.status(500).json({
           error: 'Internal organisation was not found.'
         });
       }
     } else {
-      result = await pool.query(
+      result = await client.query(
         `INSERT INTO devices (
-          asset_tag,
-          display_name,
-          manufacturer,
-          model,
-          ownership_type,
-          assigned_to
-        )
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING *`,
-        [
-          String(asset_tag).trim(),
-          String(display_name).trim(),
-          manufacturer,
-          model,
-          ownership_type,
-          assigned_to
-        ]
+           asset_tag,
+           display_name,
+           manufacturer,
+           model,
+           ownership_type,
+           assigned_to
+         )
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING *`,
+        values
       );
     }
 
-    await pool.query(
-      `INSERT INTO audit_logs
-       (actor_email, action, target_type, target_id)
+    const device = result.rows[0];
+
+    await client.query(
+      `INSERT INTO audit_logs (
+         actor_email,
+         action,
+         target_type,
+         target_id
+       )
        VALUES ($1, $2, $3, $4)`,
       [
         req.user.email,
         'DEVICE_INVENTORY_CREATED',
         'DEVICE',
-        String(result.rows[0].id)
+        String(device.id)
       ]
     );
 
-    res.status(201).json({ device: result.rows[0] });
+    await client.query('COMMIT');
 
+    return res.status(201).json({ device });
   } catch (err) {
+    if (client) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Preserve the original database error.
+      }
+    }
+
     if (err.code === '23505') {
       return res.status(409).json({
         error: 'That asset tag already exists.'
       });
     }
 
-    next(err);
+    return next(err);
+  } finally {
+    client?.release();
   }
 });
 
-// Retrieve an individual device.
+// Retrieve one device by ID.
 router.get('/:id', async (req, res, next) => {
   try {
     const { rows } = await pool.query(
-      'SELECT * FROM devices WHERE id = $1',
+      `SELECT *
+       FROM devices
+       WHERE id = $1`,
       [req.params.id]
     );
 
@@ -146,9 +194,9 @@ router.get('/:id', async (req, res, next) => {
       });
     }
 
-    res.json({ device: rows[0] });
+    return res.json({ device: rows[0] });
   } catch (err) {
-    next(err);
+    return next(err);
   }
 });
 
