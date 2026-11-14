@@ -326,7 +326,7 @@ export default function App() {
     return <Login onLogin={login} />;
   }
 
-  const nav = [
+ const nav = [
     'Overview',
     'Devices',
     'Security Center',
@@ -334,7 +334,8 @@ export default function App() {
     'Employees',
     'Reports',
     'Audit Logs',
-    'Settings'
+    'Settings',
+    'NEXUS Suite'
   ];
 
   return (
@@ -570,7 +571,21 @@ export default function App() {
           </section>
         )}
 
-        {!['Overview', 'Devices', 'Audit Logs'].includes(tab) && (
+        {tab === 'NEXUS Suite' && (
+  <section className="card panel" style={{ padding: 0, overflow: 'hidden' }}>
+    <iframe
+      src="/nexus-suite/NEXUS_PRO_v39_signin_audit_frontendperfect.html"
+      title="NEXUS Suite"
+      style={{
+        width: '100%',
+        height: '85vh',
+        border: 'none',
+        background: '#fff'
+      }}
+    />
+  </section>
+)}
+{!['Overview', 'Devices', 'Audit Logs', 'NEXUS Suite'].includes(tab) && (      
           <section className="card panel">
             <h3>{tab}</h3>
             <p className="muted">
